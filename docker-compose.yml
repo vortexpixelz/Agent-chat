@@ -1,0 +1,57 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: dual-llama-ollama
+    restart: unless-stopped
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    command: ["serve"]
+
+  app:
+    build: .
+    container_name: dual-llama-secom
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # wire app to the ollama container
+      - OLLAMA_BASE_URL=http://ollama:11434
+      # models (override if you want a bigger one)
+      - LLAMA_MODEL=${LLAMA_MODEL:-llama3.1:8b}
+      - EMBED_MODEL=${EMBED_MODEL:-nomic-embed-text}
+      # run params
+      - SEED=${SEED:-Swap intros, then riff on memory-augmented LLMs for trading and emergent jargon.}
+      - MAX_TURNS=${MAX_TURNS:-26}
+      - THREAD_ID=${THREAD_ID:-get-to-know}
+      # toggle a connectivity check instead of full run (true/false)
+      - DRY_RUN=${DRY_RUN:-false}
+    volumes:
+      - ./data:/app/data
+    working_dir: /app
+    command: >
+      sh -c '
+      # optional pre-pull to speed first run
+      curl -s -X POST ${OLLAMA_BASE_URL}/api/pull -d "{\"name\":\"${LLAMA_MODEL}\"}" >/dev/null 2>&1 || true &&
+      curl -s -X POST ${OLLAMA_BASE_URL}/api/pull -d "{\"name\":\"${EMBED_MODEL}\"}" >/dev/null 2>&1 || true &&
+      if [ "${DRY_RUN}" = "true" ]; then
+        echo "Dry run: checking Ollama connectivity..." &&
+        curl -fsS ${OLLAMA_BASE_URL}/api/tags && exit 0;
+      else
+        python /app/dual_llama_secom_graph.py \
+          --seed "${SEED}" \
+          --max_turns ${MAX_TURNS} \
+          --thread_id "${THREAD_ID}";
+      fi
+      '
+
+volumes:
+  ollama_models:
