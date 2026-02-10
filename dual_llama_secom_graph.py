@@ -45,12 +45,41 @@ ROLE_HINTS = [
     "Switch voice to a systems reliability engineer.",
     "Switch voice to an ethicist.",
 ]
-DEFAULT_LLAMA_MODEL = os.getenv("LLAMA_MODEL", "llama3.1:8b")
-DEFAULT_EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
-DEFAULT_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 DATA_PATH = Path("data")
 MEMORY_PATH = DATA_PATH / "secom_memory.jsonl"
 ROLE_HINT_RATE = 0.35
+
+
+def get_base_url() -> str:
+    """Return the Ollama base URL from the environment."""
+
+    return os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+
+def get_llama_model_name() -> str:
+    """Return the chat model name from the environment."""
+
+    return os.getenv("LLAMA_MODEL", "llama3.1:8b")
+
+
+def get_embed_model_name() -> str:
+    """Return the embedding model name from the environment."""
+
+    return os.getenv("EMBED_MODEL", "nomic-embed-text")
+
+
+def llama(*, temperature: float, model: Optional[str] = None, **kwargs: Any) -> ChatOllama:
+    """Construct a ChatOllama client wired to the configured endpoint."""
+
+    resolved_model = model or get_llama_model_name()
+    return ChatOllama(model=resolved_model, base_url=get_base_url(), temperature=temperature, **kwargs)
+
+
+def embedding_client(model: Optional[str] = None) -> OllamaEmbeddings:
+    """Construct an embedding client wired to the configured endpoint."""
+
+    resolved_model = model or get_embed_model_name()
+    return OllamaEmbeddings(model=resolved_model, base_url=get_base_url())
 
 
 def ensure_data_path() -> None:
@@ -155,10 +184,10 @@ class SecomCompressor:
 class SecomMemoryStore:
     """Persists and retrieves SeCom memory slices with embeddings."""
 
-    def __init__(self, path: Path, embed_model: str, weights: Optional[Dict[str, float]] = None) -> None:
+    def __init__(self, path: Path, embed_model: Optional[str] = None, weights: Optional[Dict[str, float]] = None) -> None:
         ensure_data_path()
         self.path = path
-        self.embedder = OllamaEmbeddings(model=embed_model, base_url=DEFAULT_BASE_URL)
+        self.embedder = embedding_client(embed_model)
         self.weights = weights or {AIMS: 1.05, METHODS: 1.0, RESULTS: 1.2, IMPLICATIONS: 0.95}
         self.entries: List[MemoryEntry] = []
         self._load()
@@ -380,10 +409,10 @@ def run_duo(seed: str, max_turns: int, thread_id: str) -> Dict[str, Any]:
     ensure_data_path()
     segmenter = SecomSegmenter()
     compressor = SecomCompressor()
-    memory_store = SecomMemoryStore(MEMORY_PATH, DEFAULT_EMBED_MODEL)
+    memory_store = SecomMemoryStore(MEMORY_PATH)
     prime_memory(seed, memory_store, segmenter, compressor, thread_id)
-    agentA_llm = ChatOllama(model=DEFAULT_LLAMA_MODEL, base_url=DEFAULT_BASE_URL, temperature=0.60)
-    agentB_llm = ChatOllama(model=DEFAULT_LLAMA_MODEL, base_url=DEFAULT_BASE_URL, temperature=0.85)
+    agentA_llm = llama(temperature=0.60)
+    agentB_llm = llama(temperature=0.85)
     graph = build_graph(memory_store, segmenter, compressor, agentA_llm, agentB_llm, max_turns)
     initial_state: Dict[str, Any] = {
         "thread_id": thread_id,
@@ -402,9 +431,9 @@ def run_duo(seed: str, max_turns: int, thread_id: str) -> Dict[str, Any]:
 
 def check_connectivity() -> bool:
     try:
-        test_llm = ChatOllama(model=DEFAULT_LLAMA_MODEL, base_url=DEFAULT_BASE_URL, temperature=0.1)
+        test_llm = llama(temperature=0.1)
         _ = test_llm.invoke([HumanMessage(content="Say ready in one word.")])
-        embedder = OllamaEmbeddings(model=DEFAULT_EMBED_MODEL, base_url=DEFAULT_BASE_URL)
+        embedder = embedding_client()
         _ = embedder.embed_query("ping")
         return True
     except Exception as exc:  # noqa: BLE001
